@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Panika: Ona kelmoqda!</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #1a1a1a;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  #game-container {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    display: block;
+    background: #2a2a2a;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+</style>
+</head>
+<body>
+<div id="game-container"><canvas id="game"></canvas></div>
+<script>
+'use strict';
+
+// ==================== SOZLAMALAR ====================
+const W = 400, H = 700;                 // Dizayn o'lchami (portret)
+const GAME_DURATION = 60;               // O'yin davomiyligi (soniya)
+const PLAYER_SPEED = 260;               // Qahramon tezligi (px/s)
+const TOTAL_ITEMS = 4;
+const PET_INTERVAL = 12;                // Mushuk qancha soniyada paydo bo'ladi
+const HAZARD_DAMAGE = 5;                // Yonish jazosi
+const DELIVER_REWARD = 10;              // Yetkazish mukofoti
+
+// ==================== CANVAS ====================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  const ratio = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.width = W;
+  canvas.height = H;
+  canvas.style.width = (W * ratio) + 'px';
+  canvas.style.height = (H * ratio) + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ==================== O'YIN HOLATI ====================
+let state = {};
+
+function initGame() {
+  state = {
+    player: { x: 200, y: 600, targetX: 200, targetY: 600, r: 14, carrying: null },
+    items: [
+      { x: 80,  y: 150, r: 12, color: '#ff6b6b', collected: false, delivered: false },
+      { x: 320, y: 200, r: 12, color: '#4ecdc4', collected: false, delivered: false },
+      { x: 60,  y: 430, r: 12, color: '#ffe66d', collected: false, delivered: false },
+      { x: 340, y: 480, r: 12, color: '#a29bfe', collected: false, delivered: false }
+    ],
+    hazards: [
+      { x: 40,  y: 300, w: 70, h: 70, phase: 0.0,      speed: 0.0018, dangerous: false },
+      { x: 140, y: 300, w: 70, h: 70, phase: 2.1,      speed: 0.0015, dangerous: false },
+      { x: 240, y: 300, w: 70, h: 70, phase: 4.2,      speed: 0.0017, dangerous: false },
+      { x: 340, y: 300, w: 50, h: 70, phase: 1.0,      speed: 0.0019, dangerous: false }
+    ],
+    box: { x: 330, y: 640, w: 60, h: 45 },
+    score: 0,
+    timeLeft: GAME_DURATION,
+    delivered: 0,
+    gameState: 'playing',          // 'playing' | 'won' | 'lost'
+    lastTime: performance.now(),
+    pet: { active: false, x: 0, y: 0, timer: 0, targetItem: null },
+    message: '',
+    messageTimer: 0
+  };
+}
+
+// ==================== KIRISH (INPUT) ====================
+function handleInput(e) {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  const x = (clientX - rect.left) * (W / rect.width);
+  const y = (clientY - rect.top) * (H / rect.height);
+
+  if (state.gameState === 'playing') {
+    state.player.targetX = x;
+    state.player.targetY = y;
+  } else {
+    initGame();
+  }
+}
+
+canvas.addEventListener('touchstart', handleInput, { passive: false });
+canvas.addEventListener('mousedown', handleInput);
+
+// ==================== YANGILANISH (UPDATE) ====================
+function showMessage(msg) {
+  state.message = msg;
+  state.messageTimer = 1.5;
+}
+
+function update(dt) {
+  if (state.gameState !== 'playing') return;
+
+  // Vaqt hisobi
+  state.timeLeft -= dt;
+  if (state.timeLeft <= 0) {
+    state.timeLeft = 0;
+    state.gameState = 'lost';
+    return;
+  }
+
+  // Qahramon harakati
+  const p = state.player;
+  const dx = p.targetX - p.x;
+  const dy = p.targetY - p.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > 2) {
+    const move = Math.min(PLAYER_SPEED * dt, dist);
+    p.x += (dx / dist) * move;
+    p.y += (dy / dist) * move;
+  }
+
+  // Xavfli pollar
+  for (const h of state.hazards) {
+    h.phase += h.speed * dt * 1000;
+    const intensity = (Math.sin(h.phase) + 1) / 2;
+    h.dangerous = intensity > 0.75;
+
+    if (h.dangerous &&
+        p.x > h.x && p.x < h.x + h.w &&
+        p.y > h.y && p.y < h.y + h.h) {
+      // Zarar: boshiga qaytarish
+      p.x = 200; p.y = 600;
+      p.targetX = 200; p.targetY = 600;
+      if (p.carrying) {
+        p.carrying.collected = false;
+        p.carrying = null;
+      }
+      state.score = Math.max(0, state.score - HAZARD_DAMAGE);
+      showMessage('−' + HAZARD_DAMAGE + '! Yonib ketdi!');
+    }
+  }
+
+  // Narsa olish
+  if (!p.carrying) {
+    for (const item of state.items) {
+      if (item.collected || item.delivered) continue;
+      if (Math.hypot(item.x - p.x, item.y - p.y) < p.r + item.r) {
+        item.collected = true;
+        p.carrying = item;
+        showMessage('Olindi!');
+        break;
+      }
+    }
+  }
+
+  // Qutiga yetkazish
+  if (p.carrying) {
+    const b = state.box;
+    if (p.x > b.x && p.x < b.x + b.w && p.y > b.y && p.y < b.y + b.h) {
+      p.carrying.delivered = true;
+      p.carrying = null;
+      state.delivered++;
+      state.score += DELIVER_REWARD;
+      showMessage('+' + DELIVER_REWARD + '!');
+      if (state.delivered >= TOTAL_ITEMS) {
+        state.gameState = 'won';
+      }
+    }
+  }
+
+  // Mushuk
+  updatePet(dt);
+
+  // Xabar vaqti
+  if (state.messageTimer > 0) {
+    state.messageTimer -= dt;
+    if (state.messageTimer <= 0) state.message = '';
+  }
+}
+
+function updatePet(dt) {
+  const pet = state.pet;
+  pet.timer += dt;
+
+  // Mushukni chaqirish
+  if (!pet.active && pet.timer > PET_INTERVAL) {
+    const candidates = state.items.filter(i => i.delivered || i.collected);
+    if (candidates.length > 0) {
+      pet.timer = 0;
+      pet.active = true;
+      pet.x = -30;
+      pet.y = 100;
+      pet.targetItem = candidates[Math.floor(Math.random() * candidates.length)];
+      showMessage('Mushuk keldi!');
+    }
+  }
+
+  // Mushuk harakati
+  if (pet.active && pet.targetItem) {
+    const target = pet.targetItem;
+    const pdx = target.x - pet.x;
+    const pdy = target.y - pet.y;
+    const pd = Math.hypot(pdx, pdy);
+    if (pd > 8) {
+      pet.x += (pdx / pd) * 220 * dt;
+      pet.y += (pdy / pd) * 220 * dt;
+    } else {
+      // Urib yuborish
+      if (state.player.carrying === target) {
+        state.player.carrying = null;
+      }
+      target.delivered = false;
+      target.collected = false;
+      target.x = 40 + Math.random() * 320;
+      target.y = 100 + Math.random() * 400;
+      state.delivered = Math.max(0, state.delivered - 1);
+      state.score = Math.max(0, state.score - 5);
+      showMessage('Mushuk urib yubordi!');
+      pet.active = false;
+      pet.targetItem = null;
+    }
+  }
+}
+
+// ==================== CHIZISH (RENDER) ====================
+function render() {
+  // Fon
+  ctx.fillStyle = '#2a2a2a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Xavfli pollar
+  for (const h of state.hazards) {
+    const intensity = (Math.sin(h.phase) + 1) / 2;
+    let color;
+    if (intensity < 0.4)      color = `rgba(100, 100, 100, 0.25)`;
+    else if (intensity < 0.75) color = `rgba(255, 165, 0, ${0.3 + intensity * 0.5})`;
+    else                       color = `rgba(255, 50, 50, ${0.6 + intensity * 0.4})`;
+    ctx.fillStyle = color;
+    ctx.fillRect(h.x, h.y, h.w, h.h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(h.x + 0.5, h.y + 0.5, h.w - 1, h.h - 1);
+  }
+
+  // Quti
+  const b = state.box;
+  ctx.fillStyle = '#8b4513';
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = '#5a2d0c';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('QUTI', b.x + b.w / 2, b.y + b.h / 2);
+
+  // Narsalar
+  for (const item of state.items) {
+    if (item.delivered) continue;
+    ctx.fillStyle = item.color;
+    ctx.beginPath();
+    ctx.arc(item.x, item.y, item.r, 0, Math.PI * 2);
+    ctx.fill();
+    if (item.collected) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  // Qahramon
+  const p = state.player;
+  ctx.fillStyle = '#4a90d9';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Qo'lidagi narsa
+  if (p.carrying) {
+    ctx.fillStyle = p.carrying.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y - p.r - 8, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  // Mushuk
+  if (state.pet.active) {
+    const pet = state.pet;
+    ctx.fillStyle = '#ff8c00';
+    ctx.beginPath();
+    ctx.arc(pet.x, pet.y, 12, 0, Math.PI * 2);
+    ctx.fill();
+    // Ko'zlar
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(pet.x - 4, pet.y - 3, 2, 0, Math.PI * 2);
+    ctx.arc(pet.x + 4, pet.y - 3, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // HUD
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(0, 0, W, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Ball: ' + state.score, 15, 22);
+  ctx.textAlign = 'right';
+  ctx.fillText(Math.ceil(state.timeLeft) + 's', W - 15, 22);
+  ctx.textAlign = 'center';
+  ctx.font = '14px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('Yetkazildi: ' + state.delivered + '/' + TOTAL_ITEMS, W / 2, 48);
+
+  // Xabar
+  if (state.message) {
+    ctx.font = 'bold 20px sans-serif';
+    const tw = ctx.measureText(state.message).width;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.fillRect(W / 2 - tw / 2 - 18, H / 2 - 25, tw + 36, 44);
+    ctx.fillStyle = '#ffd700';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(state.message, W / 2, H / 2);
+  }
+
+  // G'alaba ekrani
+  if (state.gameState === 'won') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#4ecdc4';
+    ctx.font = 'bold 38px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('G\'ALABA!', W / 2, H / 2 - 60);
+    ctx.fillStyle = '#fff';
+    ctx.font = '22px sans-serif';
+    ctx.fillText('Ball: ' + state.score, W / 2, H / 2);
+    ctx.fillText('Vaqt: ' + Math.ceil(state.timeLeft) + 's qoldi', W / 2, H / 2 + 35);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Qayta o\'ynash uchun bosing', W / 2, H / 2 + 110);
+  }
+
+  // Mag'lubiyat ekrani
+  if (state.gameState === 'lost') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ff6b6b';
+    ctx.font = 'bold 38px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('ONA KELDI!', W / 2, H / 2 - 60);
+    ctx.fillStyle = '#fff';
+    ctx.font = '22px sans-serif';
+    ctx.fillText('Ball: ' + state.score, W / 2, H / 2);
+    ctx.fillText('Yetkazildi: ' + state.delivered + '/' + TOTAL_ITEMS, W / 2, H / 2 + 35);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Qayta o\'ynash uchun bosing', W / 2, H / 2 + 110);
+  }
+}
+
+// ==================== ASOSIY SIKL ====================
+function loop(now) {
+  const dt = Math.min((now - state.lastTime) / 1000, 0.1);
+  state.lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+initGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
